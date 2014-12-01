@@ -1,7 +1,9 @@
-var sign = require('./sign');
 var Models = require('../models');
 var User = Models.User;
-var utility = require('utility');
+var authMiddleWare = require('../middlewares/auth');
+var tools = require('../common/tools');
+var eventproxy = require('eventproxy');
+var uuid = require('node-uuid');
 
 exports.callback = function (req, res, next) {
   var profile = req.user;
@@ -11,16 +13,17 @@ exports.callback = function (req, res, next) {
     }
     // 当用户已经是 cnode 用户时，通过 github 登陆将会更新他的资料
     if (user) {
-      user.name = profile.username;
       user.githubUsername = profile.username;
+      user.githubId = profile.id;
+      user.githubAccessToken = profile.accessToken;
       user.loginname = profile.username;
-      user.email = profile.emails && profile.emails[0].value;
-      user.avatar = profile._json && profile._json.avatar_url;
+      user.avatar = profile._json.avatar_url;
+
       user.save(function (err) {
         if (err) {
           return next(err);
         }
-        sign.gen_session(user, res);
+        authMiddleWare.gen_session(user, res);
         return res.redirect('/');
       });
     } else {
@@ -37,22 +40,31 @@ exports.new = function (req, res, next) {
 
 exports.create = function (req, res, next) {
   var profile = req.session.profile;
+  var isnew = req.body.isnew;
+  var loginname = String(req.body.name).toLowerCase();
+  var password = req.body.pass;
+  var ep = new eventproxy();
+  ep.fail(next);
+
   if (!profile) {
     return res.redirect('/signin');
   }
   delete req.session.profile;
-  if (req.body.isnew) { // 注册新账号
+  if (isnew) { // 注册新账号
     var user = new User({
-      name: profile.username,
       loginname: profile.username,
       pass: profile.accessToken,
       email: profile.emails[0].value,
       avatar: profile._json.avatar_url,
       githubId: profile.id,
       githubUsername: profile.username,
+      githubAccessToken: profile.accessToken,
+      active: true,
+      accessToken: uuid.v4(),
     });
     user.save(function (err) {
       if (err) {
+        // 根据 err.err 的错误信息决定如何回应用户，这个地方写得很难看
         if (err.err.indexOf('duplicate key error') !== -1) {
           if (err.err.indexOf('users.$email') !== -1) {
             return res.status(500)
@@ -64,28 +76,39 @@ exports.create = function (req, res, next) {
           }
         }
         return next(err);
+        // END 根据 err.err 的错误信息决定如何回应用户，这个地方写得很难看
       }
-      sign.gen_session(user, res);
+      authMiddleWare.gen_session(user, res);
       res.redirect('/');
     });
   } else { // 关联老账号
-    req.body.name = req.body.name.toLowerCase();
-    User.findOne({loginname: req.body.name, pass: utility.md5(req.body.pass)},
-      function (err, user) {
-        if (err) {
-          return next(err);
-        }
+    ep.on('login_error', function (login_error) {
+      res.status(403);
+      res.render('sign/signin', { error: '账号名或密码错误。' });
+    });
+    User.findOne({loginname: loginname},
+      ep.done(function (user) {
         if (!user) {
-          return res.render('sign/signin', { error: '账号名或密码错误。' });
+          return ep.emit('login_error');
         }
-        user.githubId = profile.id;
-        user.save(function (err) {
-          if (err) {
-            return next(err);
+        tools.bcompare(password, user.pass, ep.done(function (bool) {
+          if (!bool) {
+            return ep.emit('login_error');
           }
-          sign.gen_session(user, res);
-          res.redirect('/');
-        });
-      });
+          user.githubUsername = profile.username;
+          user.githubId = profile.id;
+          user.loginname = profile.username;
+          user.avatar = profile._json.avatar_url;
+          user.githubAccessToken = profile.accessToken;
+
+          user.save(function (err) {
+            if (err) {
+              return next(err);
+            }
+            authMiddleWare.gen_session(user, res);
+            res.redirect('/');
+          });
+        }));
+      }));
   }
 };

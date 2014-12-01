@@ -6,26 +6,33 @@
  * Module dependencies.
  */
 
-require('newrelic');
+var config = require('./config');
+
+if (!config.debug) {
+  require('newrelic');
+}
 
 var path = require('path');
 var Loader = require('loader');
 var express = require('express');
 var session = require('express-session');
-var errorHandler = require('errorhandler');
-var config = require('./config').config;
 var passport = require('passport');
 require('./models');
 var GitHubStrategy = require('passport-github').Strategy;
 var githubStrategyMiddleware = require('./middlewares/github_strategy');
-var routes = require('./routes');
+var webRouter = require('./web_router');
+var apiRouterV1 = require('./api_router_v1');
 var auth = require('./middlewares/auth');
 var MongoStore = require('connect-mongo')(session);
 var _ = require('lodash');
 var csurf = require('csurf');
 var compress = require('compression');
 var bodyParser = require('body-parser');
+var busboy = require('connect-busboy');
+var errorhandler = require('errorhandler');
+var cors = require('cors');
 
+// 静态文件目录
 var staticDir = path.join(__dirname, 'public');
 
 // assets
@@ -39,7 +46,6 @@ if (config.mini_assets) {
   }
 }
 
-// host: http://127.0.0.1
 var urlinfo = require('url').parse(config.host);
 config.hostname = urlinfo.hostname || config.host;
 
@@ -61,9 +67,8 @@ app.use(require('cookie-parser')(config.session_secret));
 app.use(compress());
 app.use(session({
   secret: config.session_secret,
-  key: 'sid',
   store: new MongoStore({
-    db: config.db_name
+    url: config.db
   }),
   resave: true,
   saveUninitialized: true,
@@ -72,14 +77,20 @@ app.use(session({
 app.use(passport.initialize());
 
 // custom middleware
-app.use(require('./controllers/sign').auth_user);
+app.use(auth.authUser);
 app.use(auth.blockUser());
 
 app.use(Loader.less(__dirname));
 app.use('/public', express.static(staticDir));
 
 if (!config.debug) {
-  app.use(csurf());
+  app.use(function (req, res, next) {
+    if (req.path.indexOf('/api') === -1) {
+      csurf()(req, res, next);
+      return;
+    }
+    next();
+  });
   app.set('view cache', true);
 }
 
@@ -95,7 +106,7 @@ _.extend(app.locals, {
   assets: assets
 });
 
-_.extend(app.locals, require('./common/render_helpers'));
+_.extend(app.locals, require('./common/render_helper'));
 app.use(function (req, res, next) {
   res.locals.csrf = req.csrfToken ? req.csrfToken() : '';
   next();
@@ -110,13 +121,24 @@ passport.deserializeUser(function (user, done) {
 });
 passport.use(new GitHubStrategy(config.GITHUB_OAUTH, githubStrategyMiddleware));
 
+app.use(busboy({
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB
+  }
+}));
+
 // routes
-routes(app);
+app.use('/', webRouter);
+app.use('/api/v1', cors(), apiRouterV1);
 
 // error handler
-app.use(function (err, req, res, next) {
-  return res.send(500, err.message);
-});
+if (config.debug) {
+  app.use(errorhandler());
+} else {
+  app.use(function (err, req, res, next) {
+    return res.status(500).send('500 status');
+  });
+}
 
 app.listen(config.port, function () {
   console.log("NodeClub listening on port %d in %s mode", config.port, app.settings.env);

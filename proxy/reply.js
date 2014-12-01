@@ -2,9 +2,9 @@ var models = require('../models');
 var Reply = models.Reply;
 var EventProxy = require('eventproxy');
 
-var Util = require('../libs/util');
+var tools = require('../common/tools');
 var User = require('./user');
-var at = require('../services/at');
+var at = require('../common/at');
 
 /**
  * 获取一条回复信息
@@ -38,7 +38,7 @@ exports.getReplyById = function (id, callback) {
         return callback(err);
       }
       reply.author = author;
-      reply.friendly_create_at = Util.format_date(reply.create_at, true);
+      reply.friendly_create_at = tools.formatDate(reply.create_at, true);
       // TODO: 添加更新方法，有些旧帖子可以转换为markdown格式的内容
       if (reply.content_is_html) {
         return callback(null, reply);
@@ -63,9 +63,7 @@ exports.getReplyById = function (id, callback) {
  * @param {Function} callback 回调函数
  */
 exports.getRepliesByTopicId = function (id, cb) {
-  Reply.find({topic_id: id}, [], {sort: [
-    ['create_at', 'asc']
-  ]}, function (err, replies) {
+  Reply.find({topic_id: id}, '', {sort: 'create_at'}, function (err, replies) {
     if (err) {
       return cb(err);
     }
@@ -74,28 +72,9 @@ exports.getRepliesByTopicId = function (id, cb) {
     }
 
     var proxy = new EventProxy();
-    var done = function () {
-      var replies2 = [];
-      for (var i = replies.length - 1; i >= 0; i--) {
-        if (replies[i].reply_id) {
-          replies2.push(replies[i]);
-          replies.splice(i, 1);
-        }
-      }
-      for (var j = 0; j < replies.length; j++) {
-        replies[j].replies = [];
-        for (var k = 0; k < replies2.length; k++) {
-          var id1 = replies[j]._id;
-          var id2 = replies2[k].reply_id;
-          if (id1.toString() === id2.toString()) {
-            replies[j].replies.push(replies2[k]);
-          }
-        }
-        replies[j].replies.reverse();
-      }
-      return cb(err, replies);
-    };
-    proxy.after('reply_find', replies.length, done);
+    proxy.after('reply_find', replies.length, function () {
+      cb(null, replies);
+    });
     for (var j = 0; j < replies.length; j++) {
       (function (i) {
         var author_id = replies[i].author_id;
@@ -104,7 +83,7 @@ exports.getRepliesByTopicId = function (id, cb) {
             return cb(err);
           }
           replies[i].author = author || { _id: '' };
-          replies[i].friendly_create_at = Util.format_date(replies[i].create_at, true);
+          replies[i].friendly_create_at = tools.formatDate(replies[i].create_at, true);
           if (replies[i].content_is_html) {
             return proxy.emit('reply_find');
           }
@@ -152,4 +131,9 @@ exports.getRepliesByAuthorId = function (authorId, opt, callback) {
     opt = null;
   }
   Reply.find({author_id: authorId}, {}, opt, callback);
+};
+
+// 通过 author_id 获取回复总数
+exports.getCountByAuthorId = function (authorId, callback) {
+  Reply.count({author_id: authorId}, callback);
 };
